@@ -1,0 +1,170 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Lower Manhattan"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -74.02,
+              40.7
+            ],
+            [
+              -73.97,
+              40.7
+            ],
+            [
+              -73.97,
+              40.74
+            ],
+            [
+              -74.02,
+              40.74
+            ],
+            [
+              -74.02,
+              40.7
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Midtown"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -74.0,
+              40.74
+            ],
+            [
+              -73.96,
+              40.74
+            ],
+            [
+              -73.96,
+              40.78
+            ],
+            [
+              -74.0,
+              40.78
+            ],
+            [
+              -74.0,
+              40.74
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Upper East Side"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -73.97,
+              40.76
+            ],
+            [
+              -73.93,
+              40.76
+            ],
+            [
+              -73.93,
+              40.8
+            ],
+            [
+              -73.97,
+              40.8
+            ],
+            [
+              -73.97,
+              40.76
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Upper West Side"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -73.99,
+              40.77
+            ],
+            [
+              -73.96,
+              40.77
+            ],
+            [
+              -73.96,
+              40.81
+            ],
+            [
+              -73.99,
+              40.81
+            ],
+            [
+              -73.99,
+              40.77
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Williamsburg"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -73.97,
+              40.7
+            ],
+            [
+              -73.92,
+              40.7
+            ],
+            [
+              -73.92,
+              40.73
+            ],
+            [
+              -73.97,
+              40.73
+            ],
+            [
+              -73.97,
+              40.7
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoBeam</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      color: #16202a;
+      background: #f7f8fa;
+    }
+
+    #shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    #panel {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 16px;
+      background: #ffffff;
+      border-bottom: 1px solid #d9dee5;
+    }
+
+    #panel strong {
+      margin-right: 8px;
+      font-size: 16px;
+    }
+
+    .btn,
+    select {
+      height: 34px;
+      border: 1px solid #c3ccd7;
+      background: #ffffff;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .btn {
+      padding: 0 12px;
+      cursor: pointer;
+      color: #1d2b38;
+    }
+
+    .btn.active,
+    .btn.primary {
+      color: #ffffff;
+      background: #1e66f5;
+      border-color: #1e66f5;
+    }
+
+    select {
+      padding: 0 10px;
+    }
+
+    #statusbar,
+    #summary {
+      padding: 10px 16px;
+      background: #ffffff;
+      border-bottom: 1px solid #e2e7ee;
+      font-size: 13px;
+    }
+
+    #statusbar {
+      color: #425466;
+    }
+
+    #summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      color: #4c5f72;
+    }
+
+    #map {
+      flex: 1 1 auto;
+      min-height: 320px;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="shell">
+    <div id="panel">
+      <strong>GeoBeam</strong>
+      <button class="btn" id="b-range" onclick="setMode('range')">Range</button>
+      <button class="btn" id="b-join" onclick="setMode('join')">Join</button>
+      <button class="btn" id="b-knn" onclick="setMode('knn')">k-NN</button>
+      <button class="btn" id="b-stats" onclick="setMode('stats')">Counts</button>
+      <select id="partitioner">
+        <option value="grid">Grid</option>
+        <option value="quadtree">Quadtree</option>
+        <option value="adaptive">Adaptive</option>
+      </select>
+      <button class="btn primary" onclick="runMode()">Run</button>
+      <button class="btn" onclick="resetSession()">Reset</button>
+    </div>
+    <div id="statusbar">Loading session...</div>
+    <div id="summary">A fresh in-browser session is created on every page load.</div>
+    <div id="map"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const NYC = {
+      minLon: -74.05,
+      minLat: 40.65,
+      maxLon: -73.85,
+      maxLat: 40.85
+    };
+    const GRID_CELLS = 10;
+    const QUADTREE_DEPTH = 4;
+    const POINT_COUNT = 10000;
+    const KNN_SIZE = 10;
+    const SAMPLE_RATE = 0.05;
+    const GEOFENCES = [
+      { name: 'Lower Manhattan', coords: [[-74.02, 40.70], [-73.97, 40.70], [-73.97, 40.74], [-74.02, 40.74], [-74.02, 40.70]] },
+      { name: 'Midtown', coords: [[-74.00, 40.74], [-73.96, 40.74], [-73.96, 40.78], [-74.00, 40.78], [-74.00, 40.74]] },
+      { name: 'Upper East Side', coords: [[-73.97, 40.76], [-73.93, 40.76], [-73.93, 40.80], [-73.97, 40.80], [-73.97, 40.76]] },
+      { name: 'Upper West Side', coords: [[-73.99, 40.77], [-73.96, 40.77], [-73.96, 40.81], [-73.99, 40.81], [-73.99, 40.77]] },
+      { name: 'Williamsburg', coords: [[-73.97, 40.70], [-73.92, 40.70], [-73.92, 40.73], [-73.97, 40.73], [-73.97, 40.70]] }
+    ];
+    const ZONE_COLORS = {
+      'Lower Manhattan': '#d9485f',
+      Midtown: '#2f9e44',
+      'Upper East Side': '#3867d6',
+      'Upper West Side': '#e67700',
+      Williamsburg: '#7048e8',
+      OUTSIDE: '#adb5bd'
+    };
+
+    const map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([40.75, -73.95], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const resultLayer = L.layerGroup().addTo(map);
+    const guideLayer = L.layerGroup().addTo(map);
+
+    let mode = 'range';
+    let corners = [];
+    let queryRect = null;
+    let knnPoint = null;
+    let knnMarker = null;
+    let sessionPoints = [];
+    let adaptivePartitioner = null;
+
+    function createRandom(seed) {
+      let state = seed >>> 0;
+      return function next() {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return state / 4294967296;
+      };
+    }
+
+    function gaussian(random, mean, stdDev) {
+      let u = 0;
+      let v = 0;
+      while (u === 0) u = random();
+      while (v === 0) v = random();
+      const magnitude = Math.sqrt(-2.0 * Math.log(u));
+      const angle = 2.0 * Math.PI * v;
+      return mean + stdDev * magnitude * Math.cos(angle);
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+    function formatMoney(value) {
+      return '$' + value.toFixed(2);
+    }
+
+    function setStatus(message) {
+      document.getElementById('statusbar').textContent = message;
+    }
+
+    function setSummary(parts) {
+      document.getElementById('summary').textContent = parts.join(' | ');
+    }
+
+    function keyForCell(cell) {
+      return cell.join(':');
+    }
+
+    function pointInBBox(point, bbox) {
+      return point.lon >= bbox[0] && point.lon <= bbox[2] && point.lat >= bbox[1] && point.lat <= bbox[3];
+    }
+
+    function pointInPolygon(lon, lat, polygon) {
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i][0];
+        const yi = polygon[i][1];
+        const xj = polygon[j][0];
+        const yj = polygon[j][1];
+        const intersects = ((yi > lat) !== (yj > lat)) &&
+          (lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || 1e-12) + xi);
+        if (intersects) inside = !inside;
+      }
+      return inside;
+    }
+
+    function generatePoints() {
+      const random = createRandom(42);
+      const points = [];
+      for (let i = 0; i < POINT_COUNT; i += 1) {
+        let lon;
+        let lat;
+        if (random() < 0.7) {
+          lon = gaussian(random, -73.98, 0.02);
+          lat = gaussian(random, 40.75, 0.025);
+        } else {
+          lon = NYC.minLon + random() * (NYC.maxLon - NYC.minLon);
+          lat = NYC.minLat + random() * (NYC.maxLat - NYC.minLat);
+        }
+        points.push({
+          trip_id: 'T' + String(i).padStart(6, '0'),
+          lon: clamp(lon, NYC.minLon, NYC.maxLon),
+          lat: clamp(lat, NYC.minLat, NYC.maxLat),
+          fare: Math.round((5 + random() * 75) * 100) / 100
+        });
+      }
+      return points;
+    }
+
+    function createGridPartitioner() {
+      const lonStep = (NYC.maxLon - NYC.minLon) / GRID_CELLS;
+      const latStep = (NYC.maxLat - NYC.minLat) / GRID_CELLS;
+      return {
+        kind: 'grid',
+        cellFor(lon, lat) {
+          const x = Math.min(Math.max(Math.floor((lon - NYC.minLon) / lonStep), 0), GRID_CELLS - 1);
+          const y = Math.min(Math.max(Math.floor((lat - NYC.minLat) / latStep), 0), GRID_CELLS - 1);
+          return [x, y];
+        },
+        cellsForBBox(bbox) {
+          const start = this.cellFor(bbox[0], bbox[1]);
+          const end = this.cellFor(bbox[2], bbox[3]);
+          const cells = [];
+          for (let x = start[0]; x <= end[0]; x += 1) {
+            for (let y = start[1]; y <= end[1]; y += 1) {
+              cells.push([x, y]);
+            }
+          }
+          return cells;
+        },
+        boundsForCell(cell) {
+          const minLon = NYC.minLon + cell[0] * lonStep;
+          const minLat = NYC.minLat + cell[1] * latStep;
+          return {
+            minLon,
+            minLat,
+            maxLon: minLon + lonStep,
+            maxLat: minLat + latStep
+          };
+        }
+      };
+    }
+
+    function quadtreeBounds(path) {
+      let minLon = NYC.minLon;
+      let minLat = NYC.minLat;
+      let maxLon = NYC.maxLon;
+      let maxLat = NYC.maxLat;
+      for (const quadrant of path) {
+        const midLon = (minLon + maxLon) / 2;
+        const midLat = (minLat + maxLat) / 2;
+        if (quadrant === 0) {
+          maxLon = midLon;
+          maxLat = midLat;
+        } else if (quadrant === 1) {
+          maxLon = midLon;
+          minLat = midLat;
+        } else if (quadrant === 2) {
+          minLon = midLon;
+          maxLat = midLat;
+        } else {
+          minLon = midLon;
+          minLat = midLat;
+        }
+      }
+      return { minLon, minLat, maxLon, maxLat };
+    }
+
+    function intersectsBBox(a, b) {
+      return !(a.maxLon < b[0] || a.minLon > b[2] || a.maxLat < b[1] || a.minLat > b[3]);
+    }
+
+    function createQuadtreePartitioner() {
+      return {
+        kind: 'quadtree',
+        cellFor(lon, lat) {
+          let minLon = NYC.minLon;
+          let minLat = NYC.minLat;
+          let maxLon = NYC.maxLon;
+          let maxLat = NYC.maxLat;
+          const path = [];
+          for (let depth = 0; depth < QUADTREE_DEPTH; depth += 1) {
+            const midLon = (minLon + maxLon) / 2;
+            const midLat = (minLat + maxLat) / 2;
+            if (lon < midLon && lat < midLat) {
+              path.push(0);
+              maxLon = midLon;
+              maxLat = midLat;
+            } else if (lon < midLon) {
+              path.push(1);
+              maxLon = midLon;
+              minLat = midLat;
+            } else if (lat < midLat) {
+              path.push(2);
+              minLon = midLon;
+              maxLat = midLat;
+            } else {
+              path.push(3);
+              minLon = midLon;
+              minLat = midLat;
+            }
+          }
+          return path;
+        },
+        cellsForBBox(bbox) {
+          const cells = [];
+          function walk(path, bounds, depth) {
+            if (!intersectsBBox(bounds, bbox)) return;
+            if (depth === QUADTREE_DEPTH) {
+              cells.push(path.slice());
+              return;
+            }
+            for (let quadrant = 0; quadrant < 4; quadrant += 1) {
+              const nextPath = path.concat(quadrant);
+              walk(nextPath, quadtreeBounds(nextPath), depth + 1);
+            }
+          }
+          walk([], { minLon: NYC.minLon, minLat: NYC.minLat, maxLon: NYC.maxLon, maxLat: NYC.maxLat }, 0);
+          return cells;
+        },
+        boundsForCell(cell) {
+          return quadtreeBounds(cell);
+        }
+      };
+    }
+
+    function buildAdaptivePartitioner(points) {
+      const sample = [];
+      for (let i = 0; i < points.length; i += 1) {
+        if (i % Math.round(1 / SAMPLE_RATE) === 0) {
+          sample.push(points[i]);
+        }
+      }
+      const lons = sample.map((point) => point.lon).sort((a, b) => a - b);
+      const lats = sample.map((point) => point.lat).sort((a, b) => a - b);
+
+      function buildBreaks(values) {
+        const breaks = [];
+        for (let i = 0; i <= GRID_CELLS; i += 1) {
+          const index = Math.min(values.length - 1, Math.floor((i * (values.length - 1)) / GRID_CELLS));
+          breaks.push(values[index]);
+        }
+        breaks[0] = NYC.minLon;
+        breaks[breaks.length - 1] = NYC.maxLon;
+        return breaks;
+      }
+
+      const lonBreaks = buildBreaks(lons);
+      const latBreaks = buildBreaks(lats);
+      latBreaks[0] = NYC.minLat;
+      latBreaks[latBreaks.length - 1] = NYC.maxLat;
+
+      function locate(breaks, value) {
+        for (let i = 0; i < breaks.length - 1; i += 1) {
+          if (value <= breaks[i + 1]) return i;
+        }
+        return breaks.length - 2;
+      }
+
+      return {
+        kind: 'adaptive',
+        sampleCount: sample.length,
+        cellFor(lon, lat) {
+          return [locate(lonBreaks, lon), locate(latBreaks, lat)];
+        },
+        cellsForBBox(bbox) {
+          const x1 = locate(lonBreaks, bbox[0]);
+          const x2 = locate(lonBreaks, bbox[2]);
+          const y1 = locate(latBreaks, bbox[1]);
+          const y2 = locate(latBreaks, bbox[3]);
+          const cells = [];
+          for (let x = x1; x <= x2; x += 1) {
+            for (let y = y1; y <= y2; y += 1) {
+              cells.push([x, y]);
+            }
+          }
+          return cells;
+        },
+        boundsForCell(cell) {
+          return {
+            minLon: lonBreaks[cell[0]],
+            maxLon: lonBreaks[cell[0] + 1],
+            minLat: latBreaks[cell[1]],
+            maxLat: latBreaks[cell[1] + 1]
+          };
+        }
+      };
+    }
+
+    function getPartitioner() {
+      const value = document.getElementById('partitioner').value;
+      if (value === 'quadtree') return createQuadtreePartitioner();
+      if (value === 'adaptive') return adaptivePartitioner;
+      return createGridPartitioner();
+    }
+
+    function groupByCell(points, partitioner) {
+      const groups = new Map();
+      for (const point of points) {
+        const cell = partitioner.cellFor(point.lon, point.lat);
+        const key = keyForCell(cell);
+        if (!groups.has(key)) {
+          groups.set(key, { cell, points: [] });
+        }
+        groups.get(key).points.push(point);
+      }
+      return groups;
+    }
+
+    function showPoints(points, color, radius, popupFactory) {
+      for (const point of points) {
+        L.circleMarker([point.lat, point.lon], {
+          radius,
+          color,
+          weight: 1,
+          fillOpacity: 0.8
+        }).bindPopup(popupFactory(point)).addTo(resultLayer);
+      }
+    }
+
+    function drawGeofences() {
+      for (const geofence of GEOFENCES) {
+        const latLngs = geofence.coords.map((pair) => [pair[1], pair[0]]);
+        L.polygon(latLngs, {
+          color: '#495057',
+          weight: 1,
+          fillOpacity: 0.05
+        }).bindPopup(geofence.name).addTo(guideLayer);
+      }
+    }
+
+    function runRange() {
+      if (corners.length !== 2) {
+        setStatus('Pick two corners first.');
+        return;
+      }
+      const bbox = [
+        Math.min(corners[0][1], corners[1][1]),
+        Math.min(corners[0][0], corners[1][0]),
+        Math.max(corners[0][1], corners[1][1]),
+        Math.max(corners[0][0], corners[1][0])
+      ];
+      const partitioner = getPartitioner();
+      const groups = groupByCell(sessionPoints, partitioner);
+      const candidateCells = partitioner.cellsForBBox(bbox).map(keyForCell);
+      const candidateSet = new Set(candidateCells);
+      const matches = [];
+      for (const [cellKey, group] of groups) {
+        if (!candidateSet.has(cellKey)) continue;
+        for (const point of group.points) {
+          if (pointInBBox(point, bbox)) matches.push(point);
+        }
+      }
+      showPoints(matches, '#1e66f5', 3, (point) => point.trip_id + '<br>' + formatMoney(point.fare));
+      setStatus('Found ' + matches.length + ' pickups inside the box.');
+      setSummary([
+        'Input: 10,000 pickups',
+        'Partitioner: ' + partitioner.kind,
+        'Candidate cells: ' + candidateSet.size,
+        'Output: ' + matches.length + ' pickups'
+      ]);
+    }
+
+    function runJoin() {
+      const joined = sessionPoints.map((point) => {
+        let zone = 'OUTSIDE';
+        for (const geofence of GEOFENCES) {
+          if (pointInPolygon(point.lon, point.lat, geofence.coords)) {
+            zone = geofence.name;
+            break;
+          }
+        }
+        return { ...point, zone };
+      });
+      drawGeofences();
+      for (const point of joined) {
+        const color = ZONE_COLORS[point.zone] || '#adb5bd';
+        L.circleMarker([point.lat, point.lon], {
+          radius: 2,
+          color,
+          weight: 1,
+          fillOpacity: 0.75
+        }).bindPopup(point.trip_id + '<br>' + point.zone).addTo(resultLayer);
+      }
+      setStatus('Joined all pickups with the zone polygons.');
+      setSummary([
+        'Input: 10,000 pickups + 5 zones',
+        'Process: point-in-polygon join',
+        'Output: 10,000 labeled pickups'
+      ]);
+    }
+
+    function runKnn() {
+      if (!knnPoint) {
+        setStatus('Pick one query point first.');
+        return;
+      }
+      const partitioner = getPartitioner();
+      const groups = groupByCell(sessionPoints, partitioner);
+      const qLon = knnPoint[1];
+      const qLat = knnPoint[0];
+      const locals = [];
+      for (const group of groups.values()) {
+        const ranked = group.points
+          .map((point) => {
+            const dx = point.lon - qLon;
+            const dy = point.lat - qLat;
+            return { distance: dx * dx + dy * dy, point };
+          })
+          .sort((a, b) => a.distance - b.distance)
+          .slice(0, KNN_SIZE * 2);
+        locals.push(...ranked);
+      }
+      const matches = locals
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, KNN_SIZE)
+        .map((item) => item.point);
+      for (const point of matches) {
+        L.circleMarker([point.lat, point.lon], {
+          radius: 5,
+          color: '#f08c00',
+          weight: 1,
+          fillOpacity: 0.9
+        }).bindPopup(point.trip_id + '<br>' + formatMoney(point.fare)).addTo(resultLayer);
+        L.polyline([knnPoint, [point.lat, point.lon]], {
+          color: '#f08c00',
+          weight: 1,
+          opacity: 0.6
+        }).addTo(resultLayer);
+      }
+      setStatus('Found the 10 nearest pickups.');
+      setSummary([
+        'Input: query point + 10,000 pickups',
+        'Partitioner: ' + partitioner.kind,
+        'Process: local top-k then global top-k',
+        'Output: 10 pickups'
+      ]);
+    }
+
+    function drawPartitionCounts(partitioner, counts) {
+      const items = Array.from(counts.values());
+      const maxCount = items.reduce((value, item) => Math.max(value, item.count), 0) || 1;
+      for (const item of items) {
+        const bounds = partitioner.boundsForCell(item.cell);
+        const opacity = 0.1 + 0.55 * (item.count / maxCount);
+        L.rectangle(
+          [[bounds.minLat, bounds.minLon], [bounds.maxLat, bounds.maxLon]],
+          {
+            color: '#c92a2a',
+            weight: 1,
+            fillOpacity: opacity
+          }
+        ).bindPopup('Cell ' + item.cell.join(':') + '<br>Count: ' + item.count).addTo(resultLayer);
+      }
+      return { itemCount: items.length, maxCount };
+    }
+
+    function runStats() {
+      const partitioner = getPartitioner();
+      const counts = new Map();
+      for (const point of sessionPoints) {
+        const cell = partitioner.cellFor(point.lon, point.lat);
+        const key = keyForCell(cell);
+        if (!counts.has(key)) counts.set(key, { cell, count: 0 });
+        counts.get(key).count += 1;
+      }
+      const summary = drawPartitionCounts(partitioner, counts);
+      setStatus('Rendered partition counts.');
+      setSummary([
+        'Input: 10,000 pickups',
+        'Partitioner: ' + partitioner.kind,
+        'Output: ' + summary.itemCount + ' partitions',
+        'Max cell count: ' + summary.maxCount
+      ]);
+    }
+
+    function clearGuides() {
+      resultLayer.clearLayers();
+      guideLayer.clearLayers();
+      if (queryRect) {
+        map.removeLayer(queryRect);
+        queryRect = null;
+      }
+      if (knnMarker) {
+        map.removeLayer(knnMarker);
+        knnMarker = null;
+      }
+    }
+
+    function resetSession() {
+      corners = [];
+      knnPoint = null;
+      clearGuides();
+      setStatus(mode === 'range'
+        ? 'Click two corners, then Run.'
+        : mode === 'join'
+          ? 'Click Run to label points by zone.'
+          : mode === 'knn'
+            ? 'Click one point, then Run.'
+            : 'Click Run to draw partition counts.');
+      setSummary([
+        'A fresh in-memory dataset was created on load',
+        'Refresh clears everything',
+        'Current session: ' + sessionPoints.length + ' pickups'
+      ]);
+    }
+
+    function setMode(nextMode) {
+      mode = nextMode;
+      ['range', 'join', 'knn', 'stats'].forEach((name) => {
+        document.getElementById('b-' + name).classList.toggle('active', name === nextMode);
+      });
+      resetSession();
+    }
+
+    function runMode() {
+      clearGuides();
+      if (mode === 'range' && corners.length === 2) {
+        queryRect = L.rectangle(corners, {
+          color: '#d9485f',
+          weight: 2,
+          fill: false
+        }).addTo(guideLayer);
+      }
+      if (mode === 'knn' && knnPoint) {
+        knnMarker = L.circleMarker(knnPoint, {
+          radius: 6,
+          color: '#111827',
+          weight: 2,
+          fillOpacity: 1
+        }).addTo(guideLayer);
+      }
+      if (mode === 'range') runRange();
+      else if (mode === 'join') runJoin();
+      else if (mode === 'knn') runKnn();
+      else runStats();
+    }
+
+    map.on('click', (event) => {
+      if (mode === 'range') {
+        if (corners.length === 2) {
+          corners = [];
+          clearGuides();
+        }
+        corners.push([event.latlng.lat, event.latlng.lng]);
+        if (corners.length === 2) {
+          queryRect = L.rectangle(corners, {
+            color: '#d9485f',
+            weight: 2,
+            fill: false
+          }).addTo(guideLayer);
+          setStatus('Box ready. Click Run.');
+        } else {
+          setStatus('Click the second corner.');
+        }
+      } else if (mode === 'knn') {
+        knnPoint = [event.latlng.lat, event.latlng.lng];
+        if (knnMarker) map.removeLayer(knnMarker);
+        knnMarker = L.circleMarker(knnPoint, {
+          radius: 6,
+          color: '#111827',
+          weight: 2,
+          fillOpacity: 1
+        }).addTo(guideLayer);
+        setStatus('Query point ready. Click Run.');
+      }
+    });
+
+    function startSession() {
+      sessionPoints = generatePoints();
+      adaptivePartitioner = buildAdaptivePartitioner(sessionPoints);
+      setMode('range');
+      window.requestAnimationFrame(() => map.invalidateSize());
+    }
+
+    startSession();
+  </script>
+</body>
+</html>
