@@ -2,7 +2,7 @@
 
 A distributed spatial query engine built on Apache Beam, with a browser front-end that visualises four canonical spatial operations over real **NYC TLC Yellow Taxi** trip records (January 2015, 12.7 M rows sampled to 10 000 pickups).
 
-**Live:** https://geobeam.ms-raaghavan.workers.dev
+**Live:** https://geobeam.pages.dev
 
 ---
 
