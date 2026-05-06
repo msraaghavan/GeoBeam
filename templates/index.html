@@ -212,11 +212,6 @@
         <button class="btn" id="b-knn" onclick="setMode('knn')">k-NN</button>
         <button class="btn" id="b-stats" onclick="setMode('stats')">Counts</button>
       </div>
-      <select id="partitioner" title="Partitioner">
-        <option value="grid">Grid</option>
-        <option value="quadtree">Quadtree</option>
-        <option value="adaptive">Adaptive</option>
-      </select>
       <span class="spacer"></span>
       <button class="btn primary" onclick="runMode()">Run</button>
       <button class="btn" onclick="resetSession()">Reset</button>
@@ -519,9 +514,6 @@
     }
 
     function getPartitioner() {
-      const value = document.getElementById('partitioner').value;
-      if (value === 'quadtree') return createQuadtreePartitioner();
-      if (value === 'adaptive') return adaptivePartitioner;
       return createGridPartitioner();
     }
 
@@ -586,7 +578,6 @@
       setStatus('Found ' + matches.length + ' pickups inside the box.');
       setSummary([
         'Input: 10,000 pickups',
-        'Partitioner: ' + partitioner.kind,
         'Candidate cells: ' + candidateSet.size,
         'Output: ' + matches.length + ' pickups'
       ]);
@@ -662,7 +653,6 @@
       setStatus('Found the 10 nearest pickups.');
       setSummary([
         'Input: query point + 10,000 pickups',
-        'Partitioner: ' + partitioner.kind,
         'Process: local top-k then global top-k',
         'Output: 10 pickups'
       ]);
@@ -699,7 +689,6 @@
       setStatus('Rendered partition counts.');
       setSummary([
         'Input: 10,000 pickups',
-        'Partitioner: ' + partitioner.kind,
         'Output: ' + summary.itemCount + ' partitions',
         'Max cell count: ' + summary.maxCount
       ]);
